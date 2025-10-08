@@ -1,8 +1,5 @@
 # Letterboxd-to-IMDb
 
-[![Run Script](https://simple-script.com/api/badge/letterboxd-to-imdb)](https://simple-script.com/app/letterboxd-to-imdb)
-
-
 [![GitHub stars](https://img.shields.io/github/stars/TobiasPankner/Letterboxd-to-IMDb.svg?style=social&label=Star)](https://GitHub.com/TobiasPankner/Letterboxd-to-IMDb/stargazers/)
 [![Donate](https://img.shields.io/badge/Donate-PayPal-green.svg)](https://www.paypal.com/cgi-bin/webscr?cmd=_s-xclick&hosted_button_id=3TU2XDBK2JFU4&source=url)
 
@@ -19,6 +16,10 @@ The script first "visits" all the Letterboxd links in your zip file and gets the
 After that, your cookie is used to authenticate a request to the internal IMDb GraphQL rating API.  
 
 **Video tutorial** on how to use this: <https://www.youtube.com/watch?v=KF7cfdUTEgw>
+
+## Run this script online (Python not required)
+
+[![Run Script](https://simple-script.com/api/badge/letterboxd-to-imdb)](https://simple-script.com/app/letterboxd-to-imdb)
 
 ## Prerequisites  
   
