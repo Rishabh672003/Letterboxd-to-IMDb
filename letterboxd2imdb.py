@@ -19,6 +19,28 @@ class RateLimitError(Exception):
     pass
 
 
+def _is_retryable_graphql_error(error):
+    """Return True for transient IMDb GraphQL errors that are safe to retry.
+
+    IMDb tags many server-side errors with extensions.isRetryable, but some
+    transient failures (e.g. DynamoDB write failures) come through as
+    BAD_USER_INPUT with isRetryable=False, so we also match on the message.
+    """
+    extensions = error.get('extensions') or {}
+    if extensions.get('isRetryable'):
+        return True
+
+    message = error.get('message', '')
+    transient_markers = (
+        "Error writing to DynamoDB",
+        "SERVICE_UNAVAILABLE",
+        "Server error",
+        "INTERNAL_SERVER",
+        "TimeoutException",
+    )
+    return any(marker in message for marker in transient_markers)
+
+
 def files_hash(files):
     block_size = 65536
     hasher = hashlib.md5()
@@ -114,23 +136,66 @@ def rate_on_imdb(imdb_id, rating):
 
 
 def add_to_imdb_watchlist(imdb_id):
+    # The old REST endpoint (PUT https://www.imdb.com/watchlist/{id}) is dead:
+    # IMDb's edge now answers it with "202 Accepted" and an empty body while
+    # silently discarding the request, so nothing was ever added. The watchlist
+    # is a "predefined list" on the GraphQL API, so we use the same API as
+    # ratings/lists with the addItemToPredefinedList mutation.
+    req_body = {
+        "query": "mutation AddToWatchlist($input: AddItemToPredefinedListInput!) { addItemToPredefinedList(input: $input) { listId __typename } }",
+        "operationName": "AddToWatchlist",
+        "variables": {
+            "input": {
+                "classType": "WATCH_LIST",
+                "item": {
+                    "itemElementId": imdb_id
+                }
+            }
+        }
+    }
     headers = {
         "content-type": "application/json",
-        "cookie": imdb_cookie
+        "cookie": imdb_cookie,
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
     }
 
-    resp = requests.put(
-        f"https://www.imdb.com/watchlist/{imdb_id}", headers=headers)
+    # IMDb's watchlist backend (DynamoDB) intermittently rejects writes with
+    # transient errors, especially under parallelism ("Error writing to
+    # DynamoDB", "Server error"/SERVICE_UNAVAILABLE_ERROR). These are safe to
+    # retry with exponential backoff.
+    max_retries = 5
+    for attempt in range(max_retries):
+        resp = requests.post("https://api.graphql.imdb.com/",
+                             json=req_body, headers=headers)
 
-    if resp.status_code != 200:
-        if resp.status_code == 429:
-            raise RateLimitError("IMDb Rate limit exceeded")
-        raise ValueError(
-            f"Error adding to IMDb watchlist. Code: {resp.status_code}")
+        if resp.status_code != 200:
+            if resp.status_code == 429:
+                raise RateLimitError("IMDb Rate limit exceeded")
+            print(
+                f"Failed to add to watchlist: HTTP {resp.status_code}, Response: {resp.text}")
+            raise ValueError(
+                f"Error adding to IMDb watchlist. Code: {resp.status_code}")
 
-    if resp.status_code == 403:
-        print(f"Failed to authenticate with cookie")
-        exit(1)
+        json_resp = resp.json()
+        errors = json_resp.get('errors') or []
+        if not errors:
+            return
+
+        first_error = errors[0]
+        first_error_msg = first_error.get('message', '')
+
+        if 'Authentication' in first_error_msg:
+            print(f"Failed to authenticate with cookie")
+            exit(1)
+
+        if _is_retryable_graphql_error(first_error) and attempt < max_retries - 1:
+            # exponential backoff with a small deterministic jitter by imdb_id
+            sleep_s = (2 ** attempt) * 0.5
+            time.sleep(sleep_s)
+            continue
+
+        print(f"GraphQL error adding to watchlist: {first_error_msg}")
+        raise ValueError(first_error_msg)
 
 
 def create_imdb_list(list_name, description=""):
